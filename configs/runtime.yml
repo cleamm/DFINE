@@ -1,10 +1,10 @@
 print_freq: 100
 output_dir: './logs'
-checkpoint_freq: 12
+checkpoint_freq: 12 # 에폭 저장 단위
 
 
 sync_bn: True
-find_unused_parameters: False
+find_unused_parameters: True
 
 
 use_amp: False

@@ -22,6 +22,7 @@ from pprint import pprint
 debug = False
 
 if debug:
+
     def custom_repr(self):
         return f"{{Tensor:{tuple(self.shape)}}} {original_repr(self)}"
 
@@ -91,7 +92,9 @@ if __name__ == "__main__":
         help="device",
     )
     parser.add_argument("--seed", type=int, help="exp reproducibility")
-    parser.add_argument("--use-amp", action="store_true", help="auto mixed precision training")
+    parser.add_argument(
+        "--use-amp", action="store_true", help="auto mixed precision training"
+    )
     parser.add_argument("--output-dir", type=str, help="output directoy")
     parser.add_argument("--summary-dir", type=str, help="tensorboard summry")
     parser.add_argument(
@@ -104,7 +107,9 @@ if __name__ == "__main__":
     parser.add_argument("-u", "--update", nargs="+", help="update yaml config")
 
     # env
-    parser.add_argument("--print-method", type=str, default="builtin", help="print method")
+    parser.add_argument(
+        "--print-method", type=str, default="builtin", help="print method"
+    )
     parser.add_argument("--print-rank", type=int, default=0, help="print rank id")
 
     parser.add_argument("--local-rank", type=int, help="local rank id")

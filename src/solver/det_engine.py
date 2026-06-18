@@ -43,7 +43,11 @@ def train_one_epoch(
     metric_logger.add_meter("lr", SmoothedValue(window_size=1, fmt="{value:.6f}"))
 
     epochs = kwargs.get("epochs", None)
-    header = "Epoch: [{}]".format(epoch) if epochs is None else "Epoch: [{}/{}]".format(epoch, epochs)
+    header = (
+        "Epoch: [{}]".format(epoch)
+        if epochs is None
+        else "Epoch: [{}/{}]".format(epoch, epochs)
+    )
 
     print_freq = kwargs.get("print_freq", 10)
     writer: SummaryWriter = kwargs.get("writer", None)
@@ -56,23 +60,49 @@ def train_one_epoch(
     output_dir = kwargs.get("output_dir", None)
     num_visualization_sample_batch = kwargs.get("num_visualization_sample_batch", 1)
 
+    accumulation_steps = 8  # 배치사이즈 설정값 x 8로 효과보도록
+    optimizer.zero_grad()
+
     for i, (samples, targets) in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
     ):
         global_step = epoch * len(data_loader) + i
-        metas = dict(epoch=epoch, step=i, global_step=global_step, epoch_step=len(data_loader))
+        metas = dict(
+            epoch=epoch, step=i, global_step=global_step, epoch_step=len(data_loader)
+        )
 
-        if global_step < num_visualization_sample_batch and output_dir is not None and dist_utils.is_main_process():
-            save_samples(samples, targets, output_dir, "train", normalized=True, box_fmt="cxcywh")
+        if (
+            global_step < num_visualization_sample_batch
+            and output_dir is not None
+            and dist_utils.is_main_process()
+        ):
+            save_samples(
+                samples, targets, output_dir, "train", normalized=True, box_fmt="cxcywh"
+            )
 
         samples = samples.to(device)
-        targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
+        targets = [
+            {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in t.items()
+            }
+            for t in targets
+        ]
+
+        # 배치가 다 차기 전이나 마지막 자투리 배치일 때 업데이트 여부 판단 조건
+        is_update_step = (i + 1) % accumulation_steps == 0 or (i + 1) == len(
+            data_loader
+        )
+        # ----------------------------------------------------
 
         if scaler is not None:
             with torch.autocast(device_type=str(device), cache_enabled=True):
                 outputs = model(samples, targets=targets)
 
-            if torch.isnan(outputs["pred_boxes"]).any() or torch.isinf(outputs["pred_boxes"]).any():
+            if (
+                torch.isnan(outputs["pred_boxes"]).any()
+                or torch.isinf(outputs["pred_boxes"]).any()
+            ):
                 print(outputs["pred_boxes"])
                 state = model.state_dict()
                 new_state = {}
@@ -88,35 +118,42 @@ def train_one_epoch(
                 loss_dict = criterion(outputs, targets, **metas)
 
             loss = sum(loss_dict.values())
+
+            loss = loss / accumulation_steps
+
             scaler.scale(loss).backward()
 
-            if max_norm > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            if is_update_step:
+                if max_norm > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
 
         else:
             outputs = model(samples, targets=targets)
             loss_dict = criterion(outputs, targets, **metas)
 
             loss: torch.Tensor = sum(loss_dict.values())
-            optimizer.zero_grad()
+            loss = loss / accumulation_steps
             loss.backward()
 
-            if max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            if is_update_step:
+                if max_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-            optimizer.step()
+                optimizer.step()
+                optimizer.zero_grad()
 
         # ema
-        if ema is not None:
-            ema.update(model)
+        if is_update_step:
+            if ema is not None:
+                ema.update(model)
 
-        if lr_warmup_scheduler is not None:
-            lr_warmup_scheduler.step()
+            if lr_warmup_scheduler is not None:
+                lr_warmup_scheduler.step()
 
         loss_dict_reduced = dist_utils.reduce_dict(loss_dict)
         loss_value = sum(loss_dict_reduced.values())
@@ -139,7 +176,11 @@ def train_one_epoch(
 
     if use_wandb:
         wandb.log(
-            {"lr": optimizer.param_groups[0]["lr"], "epoch": epoch, "train/loss": np.mean(losses)}
+            {
+                "lr": optimizer.param_groups[0]["lr"],
+                "epoch": epoch,
+                "train/loss": np.mean(losses),
+            }
         )
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -181,14 +222,28 @@ def evaluate(
     output_dir = kwargs.get("output_dir", None)
     num_visualization_sample_batch = kwargs.get("num_visualization_sample_batch", 1)
 
-    for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+    for i, (samples, targets) in enumerate(
+        metric_logger.log_every(data_loader, 10, header)
+    ):
         global_step = epoch * len(data_loader) + i
 
-        if global_step < num_visualization_sample_batch and output_dir is not None and dist_utils.is_main_process():
-            save_samples(samples, targets, output_dir, "val", normalized=False, box_fmt="xyxy")
+        if (
+            global_step < num_visualization_sample_batch
+            and output_dir is not None
+            and dist_utils.is_main_process()
+        ):
+            save_samples(
+                samples, targets, output_dir, "val", normalized=False, box_fmt="xyxy"
+            )
 
         samples = samples.to(device)
-        targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
+        targets = [
+            {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in t.items()
+            }
+            for t in targets
+        ]
 
         outputs = model(samples)
         # with torch.autocast(device_type=str(device)):
@@ -204,7 +259,10 @@ def evaluate(
         #     target_sizes = torch.stack([t["size"] for t in targets], dim=0)
         #     results = postprocessor['segm'](results, outputs, orig_target_sizes, target_sizes)
 
-        res = {target["image_id"].item(): output for target, output in zip(targets, results)}
+        res = {
+            target["image_id"].item(): output
+            for target, output in zip(targets, results)
+        }
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
@@ -221,10 +279,19 @@ def evaluate(
                 }
             )
             labels = (
-                torch.tensor([mscoco_category2label[int(x.item())] for x in result["labels"].flatten()])
-                .to(result["labels"].device)
-                .reshape(result["labels"].shape)
-            ) if postprocessor.remap_mscoco_category else result["labels"]
+                (
+                    torch.tensor(
+                        [
+                            mscoco_category2label[int(x.item())]
+                            for x in result["labels"].flatten()
+                        ]
+                    )
+                    .to(result["labels"].device)
+                    .reshape(result["labels"].shape)
+                )
+                if postprocessor.remap_mscoco_category
+                else result["labels"]
+            )
             preds.append(
                 {"boxes": result["boxes"], "labels": labels, "scores": result["scores"]}
             )

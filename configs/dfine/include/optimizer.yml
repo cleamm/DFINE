@@ -7,7 +7,7 @@ ema:
   start: 0
 
 
-epochs: 72
+epochs: 25 # 72
 clip_max_norm: 0.1
 
 
@@ -16,21 +16,28 @@ optimizer:
   params:
     -
       params: '^(?=.*backbone)(?!.*norm).*$'
-      lr: 0.0000125
+      lr: 0.00001
     -
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
       weight_decay: 0.
 
-  lr: 0.00025
+  lr: 0.0001
   betas: [0.9, 0.999]
   weight_decay: 0.000125
 
+grad_max_norm: 0.1
 
+# lr_scheduler:
+#   type: MultiStepLR
+#   milestones: [500]
+#   gamma: 0.1
+
+# 만약 D-FINE 툴킷 스케줄러 지정 방식이 클래스 타입 지정 형태라면 아래와 같이 변경합니다.
 lr_scheduler:
   type: MultiStepLR
-  milestones: [500]
-  gamma: 0.1
+  milestones: [4, 8, 12, 16, 20] # 4, 8, 12, 16, 20 에폭마다 학습률 감소
+  gamma: 0.3  # 기존 lr에 0.2를 곱해서 5분의 1로 감소 (예: 0.0001 -> 0.00002)
 
 lr_warmup_scheduler:
   type: LinearWarmup
-  warmup_duration: 500
+  warmup_duration: 1000
