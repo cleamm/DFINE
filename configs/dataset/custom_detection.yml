@@ -11,8 +11,8 @@ train_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: ../images/train
-    ann_file: ../annotations/instances_train.json
+    img_folder: /opt/ml/input/data/train
+    ann_file: /opt/ml/input/src/instances_train.json
     return_masks: False
     transforms:
       type: Compose
@@ -28,14 +28,14 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: ../images/val
-    ann_file: ../annotations/instances_val.json
+    img_folder: /opt/ml/input/data/val
+    ann_file: /opt/ml/input/src/instances_val.json
     return_masks: False
     transforms:
       type: Compose
       ops: ~
   shuffle: False
-  num_workers: 8
+  num_workers: 6
   drop_last: False
   collate_fn:
     type: BatchImageCollateFunction
