@@ -24,7 +24,7 @@ train_dataloader:
     base_size: 1280
     # base_size: 640
     base_size_repeat: 3
-    stop_epoch: 21 # epoch in [72, ~) stop `multiscales`
+    stop_epoch: 60 # epoch in [72, ~) stop `multiscales`
     # stop_epoch: 72 # epoch in [72, ~) stop `multiscales`
 
   shuffle: True
