@@ -6,38 +6,34 @@ ema:
   warmups: 1000
   start: 0
 
-
 epochs: 72
 clip_max_norm: 0.1
-
+grad_max_norm: 0.1 # LR 폭발 방지
 
 optimizer:
   type: AdamW
   params:
     -
       params: '^(?=.*backbone)(?!.*norm).*$'
-      lr: 0.0001
+      # lr: 0.000003
+      lr: 0.00001
     -
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
       weight_decay: 0.
 
-  lr: 0.001
+  lr: 0.0001
+  # lr: 0.00003
   betas: [0.9, 0.999]
   weight_decay: 0.000125
 
-grad_max_norm: 0.1
 
-# lr_scheduler:
-#   type: MultiStepLR
-#   milestones: [500]
-#   gamma: 0.1
-
-# 만약 D-FINE 툴킷 스케줄러 지정 방식이 클래스 타입 지정 형태라면 아래와 같이 변경합니다.
 lr_scheduler:
   type: MultiStepLR
-  milestones: [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60, 63, 66, 69, 72]
-  gamma: 0.7 
+  milestones: [36, 54, 60]
+  gamma: 0.3
 
 lr_warmup_scheduler:
   type: LinearWarmup
-  warmup_duration: 125  # 1000
+  # 👈 [핵심] 웜업 지속 기간을 1000으로 늘려줍니다. (가상 배치 8배이므로 화면상으론 8,000스텝)
+  # 이렇게 하면 약 1.8에포크 동안 아주 천천히 예열되면서 0.0001에 도달하므로 절대 튀지 않습니다.
+  warmup_duration: 1000

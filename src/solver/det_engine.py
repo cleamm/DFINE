@@ -223,7 +223,7 @@ def evaluate(
     num_visualization_sample_batch = kwargs.get("num_visualization_sample_batch", 1)
 
     for i, (samples, targets) in enumerate(
-        metric_logger.log_every(data_loader, 10, header)
+        metric_logger.log_every(data_loader, 100, header)
     ):
         global_step = epoch * len(data_loader) + i
 
