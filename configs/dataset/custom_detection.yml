@@ -12,7 +12,7 @@ train_dataloader:
   dataset:
     type: CocoDetection
     img_folder: /opt/ml/input/data/train
-    ann_file: /opt/ml/input/src/instances_train.json
+    ann_file: /opt/ml/code/src/instances_train.json
     return_masks: False
     transforms:
       type: Compose
@@ -29,7 +29,7 @@ val_dataloader:
   dataset:
     type: CocoDetection
     img_folder: /opt/ml/input/data/val
-    ann_file: /opt/ml/input/src/instances_val.json
+    ann_file: /opt/ml/code/src/instances_val.json
     return_masks: False
     transforms:
       type: Compose
