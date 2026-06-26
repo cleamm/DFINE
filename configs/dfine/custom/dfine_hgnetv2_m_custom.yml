@@ -270,7 +270,7 @@ val_dataloader:
       type: Compose
       ops: ~
   shuffle: False
-  num_workers: 6
+  num_workers: 8
   drop_last: False
   collate_fn:
     type: BatchImageCollateFunction
