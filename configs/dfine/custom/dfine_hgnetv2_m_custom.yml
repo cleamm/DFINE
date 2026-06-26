@@ -1,7 +1,4 @@
-__include__: [
-]
-
-output_dir: ./m_custom_output260624
+output_dir: ./m_custom_output
 
 use_amp: True
 use_ema: True
@@ -39,16 +36,16 @@ optimizer:
   params:
     - 
       params: '^(?=.*backbone)(?!.*norm|bn).*$'
-      lr: 0.0005 # 백본임
+      lr: 0.0001 # 백본임
     -
       params: '^(?=.*backbone)(?=.*norm|bn).*$'
-      lr: 0.0005
+      lr: 0.0001
       weight_decay: 0.
     -
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
       weight_decay: 0.
 
-  lr: 0.001 # 전체 lr
+  lr: 0.0003 # 전체 lr
   betas: [0.9, 0.999]
   weight_decay: 0.000125
 
