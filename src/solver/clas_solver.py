@@ -24,7 +24,9 @@ class ClasSolver(BaseSolver):
         self.train()
         args = self.cfg
 
-        n_parameters = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        n_parameters = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
         print("Number of params:", n_parameters)
 
         output_dir = Path(args.output_dir)
@@ -57,8 +59,14 @@ class ClasSolver(BaseSolver):
                     dist_utils.save_on_master(self.state_dict(epoch), checkpoint_path)
 
             module = self.ema.module if self.ema else self.model
-            test_stats = evaluate(module, self.criterion, self.val_dataloader, self.device)
-
+            train_eval_stats, _ = evaluate(
+                module, self.criterion, self.train_dataloader, self.device
+            )
+            test_stats, _ = evaluate(
+                module, self.criterion, self.val_dataloader, self.device
+            )
+            print("train_eval_stats:", train_eval_stats)
+            print("val_eval_stats:", test_stats)
             log_stats = {
                 **{f"train_{k}": v for k, v in train_stats.items()},
                 **{f"test_{k}": v for k, v in test_stats.items()},

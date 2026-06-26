@@ -34,7 +34,9 @@ def train_one_epoch(
         if ema is not None:
             ema.update(model)
 
-        loss_reduced_values = {k: v.item() for k, v in reduce_dict({"loss": loss}).items()}
+        loss_reduced_values = {
+            k: v.item() for k, v in reduce_dict({"loss": loss}).items()
+        }
         metric_logger.update(**loss_reduced_values)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
@@ -56,7 +58,8 @@ def evaluate(model, criterion, dataloader, device):
     metric_logger.add_meter("loss", SmoothedValue(window_size=1))
 
     header = "Test:"
-    for imgs, labels in metric_logger.log_every(dataloader, 10, header):
+    # for imgs, labels in metric_logger.log_every(dataloader, 10, header):
+    for imgs, labels in metric_logger.log_every(dataloader, 100, header):
         imgs, labels = imgs.to(device), labels.to(device)
         preds = model(imgs)
 

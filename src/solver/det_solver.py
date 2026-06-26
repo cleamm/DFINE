@@ -50,7 +50,7 @@ class DetSolver(BaseSolver):
                 self.evaluator,
                 self.device,
                 self.last_epoch,
-                self.use_wandb
+                self.use_wandb,
             )
             for k in test_stats:
                 best_stat["epoch"] = self.last_epoch
@@ -96,13 +96,28 @@ class DetSolver(BaseSolver):
 
             self.last_epoch += 1
 
-            if self.output_dir and epoch < self.train_dataloader.collate_fn.stop_epoch:
+            # ----- 수정 코드 -----
+            if self.output_dir:  # 매 에폭 저장
                 checkpoint_paths = [self.output_dir / "last.pth"]
-                # extra checkpoint before LR drop and every 100 epochs
-                if (epoch + 1) % args.checkpoint_freq == 0:
-                    checkpoint_paths.append(self.output_dir / f"checkpoint{epoch:04}.pth")
+
+                # 사용자가 지정한 가중치 저장 주기(args.checkpoint_freq)마다 백업용 스냅샷을 영구 저장합니다.
+                # if (epoch + 1) % args.checkpoint_freq == 0:
+                if (epoch + 1) % 5 == 0:  # 2회마다 저장
+                    checkpoint_paths.append(
+                        self.output_dir / f"checkpoint{epoch:04}.pth"
+                    )
+
                 for checkpoint_path in checkpoint_paths:
                     dist_utils.save_on_master(self.state_dict(), checkpoint_path)
+
+            # ----- 기존 코드 -----
+            # if self.output_dir and epoch < self.train_dataloader.collate_fn.stop_epoch:
+            #     checkpoint_paths = [self.output_dir / "last.pth"]
+            #     # extra checkpoint before LR drop and every 100 epochs
+            #     if (epoch + 1) % args.checkpoint_freq == 0:
+            #         checkpoint_paths.append(self.output_dir / f"checkpoint{epoch:04}.pth")
+            #     for checkpoint_path in checkpoint_paths:
+            #         dist_utils.save_on_master(self.state_dict(), checkpoint_path)
 
             module = self.ema.module if self.ema else self.model
             test_stats, coco_evaluator = evaluate(
@@ -118,23 +133,58 @@ class DetSolver(BaseSolver):
             )
 
             # TODO
-            for k in test_stats:
+            # TensorBoard logging
+            for k, value in test_stats.items():
                 if self.writer and dist_utils.is_main_process():
-                    for i, v in enumerate(test_stats[k]):
-                        self.writer.add_scalar(f"Test/{k}_{i}".format(k), v, epoch)
 
-                if k in best_stat:
+                    # 기존 coco_eval_bbox, coco_eval_masks 같은 list/tuple/array 값
+                    if isinstance(value, (list, tuple)):
+                        for i, v in enumerate(value):
+                            self.writer.add_scalar(f"Test/{k}_{i}", float(v), epoch)
+
+                    # AP50, AP75, mAP50-95 같은 float 값
+                    elif isinstance(value, (int, float)):
+                        self.writer.add_scalar(f"Test/{k}", float(value), epoch)
+
+                    # per_class_ap 같은 dict 값
+                    elif isinstance(value, dict):
+                        for cls_name, ap_dict in value.items():
+                            if isinstance(ap_dict, dict):
+                                for metric_name, metric_value in ap_dict.items():
+                                    self.writer.add_scalar(
+                                        f"Test/per_class/{cls_name}_{metric_name}",
+                                        float(metric_value),
+                                        epoch,
+                                    )
+
+            # Best checkpoint 기준 metric 선택
+            if "coco_eval_bbox" in test_stats:
+                current_metric = test_stats["coco_eval_bbox"][0]
+            elif "mAP50-95" in test_stats:
+                current_metric = test_stats["mAP50-95"]
+            else:
+                current_metric = None
+
+            if current_metric is not None:
+                current_metric = float(current_metric)
+
+                if "coco_eval_bbox" in best_stat:
                     best_stat["epoch"] = (
-                        epoch if test_stats[k][0] > best_stat[k] else best_stat["epoch"]
+                        epoch
+                        if current_metric > best_stat["coco_eval_bbox"]
+                        else best_stat["epoch"]
                     )
-                    best_stat[k] = max(best_stat[k], test_stats[k][0])
+                    best_stat["coco_eval_bbox"] = max(
+                        best_stat["coco_eval_bbox"], current_metric
+                    )
                 else:
                     best_stat["epoch"] = epoch
-                    best_stat[k] = test_stats[k][0]
+                    best_stat["coco_eval_bbox"] = current_metric
 
-                if best_stat[k] > top1:
+                if best_stat["coco_eval_bbox"] > top1:
                     best_stat_print["epoch"] = epoch
-                    top1 = best_stat[k]
+                    top1 = best_stat["coco_eval_bbox"]
+
                     if self.output_dir:
                         if epoch >= self.train_dataloader.collate_fn.stop_epoch:
                             dist_utils.save_on_master(
@@ -145,30 +195,35 @@ class DetSolver(BaseSolver):
                                 self.state_dict(), self.output_dir / "best_stg1.pth"
                             )
 
-                best_stat_print[k] = max(best_stat[k], top1)
+                best_stat_print["coco_eval_bbox"] = max(
+                    best_stat["coco_eval_bbox"], top1
+                )
                 print(f"best_stat: {best_stat_print}")  # global best
 
-                if best_stat["epoch"] == epoch and self.output_dir:
-                    if epoch >= self.train_dataloader.collate_fn.stop_epoch:
-                        if test_stats[k][0] > top1:
-                            top1 = test_stats[k][0]
-                            dist_utils.save_on_master(
-                                self.state_dict(), self.output_dir / "best_stg2.pth"
-                            )
-                    else:
-                        top1 = max(test_stats[k][0], top1)
-                        dist_utils.save_on_master(
-                            self.state_dict(), self.output_dir / "best_stg1.pth"
-                        )
+                # if best_stat["epoch"] == epoch and self.output_dir:
+                #     if epoch >= self.train_dataloader.collate_fn.stop_epoch:
+                #         if test_stats[k][0] > top1:
+                #             top1 = test_stats[k][0]
+                #             dist_utils.save_on_master(
+                #                 self.state_dict(), self.output_dir / "best_stg2.pth"
+                #             )
+                #     else:
+                #         top1 = max(test_stats[k][0], top1)
+                #         dist_utils.save_on_master(
+                #             self.state_dict(), self.output_dir / "best_stg1.pth"
+                #         )
 
-                elif epoch >= self.train_dataloader.collate_fn.stop_epoch:
+                # elif epoch >= self.train_dataloader.collate_fn.stop_epoch:
+                if epoch >= self.train_dataloader.collate_fn.stop_epoch:
                     best_stat = {
                         "epoch": -1,
                     }
                     if self.ema:
                         self.ema.decay -= 0.0001
                         self.load_resume_state(str(self.output_dir / "best_stg1.pth"))
-                        print(f"Refresh EMA at epoch {epoch} with decay {self.ema.decay}")
+                        print(
+                            f"Refresh EMA at epoch {epoch} with decay {self.ema.decay}"
+                        )
 
             log_stats = {
                 **{f"train_{k}": v for k, v in train_stats.items()},
@@ -176,13 +231,6 @@ class DetSolver(BaseSolver):
                 "epoch": epoch,
                 "n_parameters": n_parameters,
             }
-
-            if self.use_wandb:
-                wandb_logs = {}
-                for idx, metric_name in enumerate(metric_names):
-                    wandb_logs[f"metrics/{metric_name}"] = test_stats["coco_eval_bbox"][idx]
-                wandb_logs["epoch"] = epoch
-                wandb.log(wandb_logs)
 
             if self.output_dir and dist_utils.is_main_process():
                 with (self.output_dir / "log.txt").open("a") as f:
@@ -209,7 +257,7 @@ class DetSolver(BaseSolver):
         self.eval()
 
         module = self.ema.module if self.ema else self.model
-        test_stats, coco_evaluator = evaluate(
+        _, coco_evaluator = evaluate(
             module,
             self.criterion,
             self.postprocessor,

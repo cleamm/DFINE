@@ -1,13 +1,19 @@
 __include__: [
-  '../../dataset/custom_detection.yml',
-  '../../runtime.yml',
-  '../include/dataloader.yml',
-  '../include/optimizer.yml',
-  '../include/dfine_hgnetv2.yml',
 ]
 
-output_dir: /opt/ml/model
+output_dir: ./m_custom_output260624
 
+use_amp: True
+use_ema: True
+ema:
+  type: ModelEMA
+  decay: 0.9999
+  warmups: 1000
+  start: 0
+
+epochs: 40
+clip_max_norm: 0.2
+grad_max_norm: 0.2
 
 DFINE:
   backbone: HGNetv2
@@ -31,30 +37,243 @@ HybridEncoder:
 optimizer:
   type: AdamW
   params:
-    -
+    - 
       params: '^(?=.*backbone)(?!.*norm|bn).*$'
-      lr: 0.0001
+      lr: 0.0005 # 백본임
     -
       params: '^(?=.*backbone)(?=.*norm|bn).*$'
-      lr: 0.0001
+      lr: 0.0005
       weight_decay: 0.
     -
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
       weight_decay: 0.
 
-  lr: 0.001
+  lr: 0.001 # 전체 lr
   betas: [0.9, 0.999]
   weight_decay: 0.000125
 
+lr_scheduler:
+  type: CosineAnnealingLR
+  T_max: 40      # 총 에폭 수
+  eta_min: 0.000001  # 최종 에폭에서의 최소 lr
+
+lr_warmup_scheduler:
+  type: LinearWarmup
+  warmup_duration: 500
+
 
 # Increase to search for the optimal ema
-epochs: 120 # 120 + 4n
+epochs: 40
 train_dataloader:
   dataset:
     transforms:
       policy:
-        epoch: 72
+        epoch: 32 # 21
   collate_fn:
-    stop_epoch: 72
+    stop_epoch: 32 # 21
     ema_restart_decay: 0.9999
-    base_size_repeat: 6
+    base_size_repeat: 3
+
+
+# Dataloader
+train_dataloader:
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.3} # 색상 변환도 있으므로 주의
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.7}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [1280, 1280], }
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: 32 # 25 # epoch in [71, ~) stop `ops`
+        ops: ['RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+        # ops: ['RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+
+  collate_fn:
+    type: BatchImageCollateFunction
+    base_size: 1280
+    # base_size: 640
+    base_size_repeat: 3
+    stop_epoch: 32 # epoch in [72, ~) stop `multiscales`
+
+  shuffle: True
+  total_batch_size: 4 # total batch size equals to 32 (4 * 8)
+  # total_batch_size: 32 # total batch size equals to 32 (4 * 8)
+  num_workers: 12
+
+
+val_dataloader:
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [1280, 1280], }
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+  shuffle: False
+  total_batch_size: 4
+  num_workers: 12
+
+
+
+# dfine_hgnetv2.yml
+
+task: detection
+
+model: DFINE
+criterion: DFINECriterion
+postprocessor: DFINEPostProcessor
+
+use_focal_loss: True
+eval_spatial_size: [1280, 1280] # h w
+
+DFINE:
+  backbone: HGNetv2
+  encoder: HybridEncoder
+  decoder: DFINETransformer
+
+HGNetv2:
+  pretrained: True
+  # local_model_dir: weight/hgnetv2/finetuning/
+  local_model_dir: weight/hgnetv2/
+
+HybridEncoder:
+  in_channels: [512, 1024, 2048]
+  feat_strides: [8, 16, 32]
+
+  # intra
+  hidden_dim: 256
+  use_encoder_idx: [2]
+  num_encoder_layers: 1
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.
+  enc_act: 'gelu'
+
+  # cross
+  expansion: 1.0
+  depth_mult: 1
+  act: 'silu'
+
+
+DFINETransformer:
+  feat_channels: [256, 256, 256]
+  feat_strides: [8, 16, 32]
+  hidden_dim: 256
+  num_levels: 3
+
+  num_layers: 6
+  eval_idx: -1
+  num_queries: 100 #  300
+
+  num_denoising: 100
+  label_noise_ratio: 0.5
+  box_noise_scale: 1.0
+
+  # NEW
+  reg_max: 32
+  reg_scale: 4
+
+  # Auxiliary decoder layers dimension scaling
+  # "eg. If num_layers: 6 eval_idx: -4,
+  # then layer 3, 4, 5 are auxiliary decoder layers."
+  layer_scale: 1  # 2
+
+
+  num_points: [3, 6, 3] # [4, 4, 4] [3, 6, 3]
+  cross_attn_method: default # default, discrete
+  query_select_method: default # default, agnostic
+
+
+DFINEPostProcessor:
+  num_top_queries: 100
+
+
+DFINECriterion:
+  weight_dict: {loss_vfl: 2, loss_bbox: 5, loss_giou: 2, loss_fgl: 0.15, loss_ddf: 1.5}
+  losses: ['vfl', 'boxes', 'local']
+  alpha: 0.75
+  gamma: 2.0
+  reg_max: 32
+
+  matcher:
+    type: HungarianMatcher
+    weight_dict: {cost_class: 4, cost_bbox: 5, cost_giou: 2}
+    alpha: 0.25
+    gamma: 2.0
+
+
+# runtime
+print_freq: 100
+output_dir: './logs'
+checkpoint_freq: 12 # 에폭 저장 단위
+
+
+sync_bn: True
+find_unused_parameters: True
+
+
+use_amp: False
+scaler:
+  type: GradScaler
+  enabled: True
+
+
+use_ema: False
+ema:
+  type: ModelEMA
+  decay: 0.9999
+  warmups: 1000
+
+use_wandb: False
+project_name: D-FINE # for wandb
+exp_name: baseline # wandb experiment name
+
+
+# custom_detection
+
+task: detection
+
+evaluator:
+  type: CocoEvaluator
+  iou_types: ['bbox', ]
+
+num_classes: 9 # your dataset classes
+remap_mscoco_category: False
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: /opt/ml/input/data/train
+    ann_file: /opt/ml/code/src/instances_train.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: True
+  num_workers: 8
+  drop_last: True
+  collate_fn:
+    type: BatchImageCollateFunction
+
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: /opt/ml/input/data/val
+    ann_file: /opt/ml/code/src/instances_val.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: False
+  num_workers: 6
+  drop_last: False
+  collate_fn:
+    type: BatchImageCollateFunction

@@ -22,9 +22,9 @@ __all__ = [
 class DetNMSPostProcessor(torch.nn.Module):
     def __init__(
         self,
-        iou_threshold=0.7,
-        score_threshold=0.01,
-        keep_topk=300,
+        iou_threshold=0.5,
+        score_threshold=0.3,
+        keep_topk=20,  # 300,
         box_fmt="cxcywh",
         logit_fmt="sigmoid",
     ) -> None:
@@ -39,7 +39,9 @@ class DetNMSPostProcessor(torch.nn.Module):
 
     def forward(self, outputs: Dict[str, Tensor], orig_target_sizes: Tensor):
         logits, boxes = outputs["pred_logits"], outputs["pred_boxes"]
-        pred_boxes = torchvision.ops.box_convert(boxes, in_fmt=self.box_fmt, out_fmt="xyxy")
+        pred_boxes = torchvision.ops.box_convert(
+            boxes, in_fmt=self.box_fmt, out_fmt="xyxy"
+        )
         pred_boxes *= orig_target_sizes.repeat(1, 2).unsqueeze(1)
 
         values, pred_labels = torch.max(logits, dim=-1)
@@ -65,7 +67,9 @@ class DetNMSPostProcessor(torch.nn.Module):
             pred_label = pred_labels[i][score_keep]
             pred_score = pred_scores[i][score_keep]
 
-            keep = torchvision.ops.batched_nms(pred_box, pred_score, pred_label, self.iou_threshold)
+            keep = torchvision.ops.batched_nms(
+                pred_box, pred_score, pred_label, self.iou_threshold
+            )
             keep = keep[: self.keep_topk]
 
             blob = {

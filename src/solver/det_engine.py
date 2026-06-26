@@ -23,6 +23,76 @@ from ..optim import ModelEMA, Warmup
 from .validator import Validator, scale_boxes
 
 
+def summarize_per_class_ap(coco_eval, class_names=None):
+    """
+    COCOeval 결과에서 클래스별 AP50, AP75, mAP50-95를 계산합니다.
+
+    반환 예:
+    {
+        "1": {
+            "AP50": 0.9123,
+            "AP75": 0.7345,
+            "mAP50-95": 0.6234
+        },
+        ...
+    }
+    """
+
+    precisions = coco_eval.eval["precision"]
+    # precision shape: [T, R, K, A, M]
+    # T: IoU thresholds, 0.50:0.95
+    # R: recall thresholds
+    # K: classes
+    # A: area range
+    # M: max detections
+
+    cat_ids = coco_eval.params.catIds
+    iou_thrs = coco_eval.params.iouThrs
+
+    results = {}
+
+    for class_idx, cat_id in enumerate(cat_ids):
+        class_result = {}
+
+        # mAP50-95: IoU 0.50~0.95 전체 평균
+        precision_all = precisions[:, :, class_idx, 0, -1]
+        precision_all = precision_all[precision_all > -1]
+        class_result["mAP50-95"] = (
+            float(np.mean(precision_all)) if precision_all.size else float("nan")
+        )
+
+        # AP50
+        iou_50_idx = np.where(np.isclose(iou_thrs, 0.50))[0]
+        if len(iou_50_idx) > 0:
+            precision_50 = precisions[iou_50_idx[0], :, class_idx, 0, -1]
+            precision_50 = precision_50[precision_50 > -1]
+            class_result["AP50"] = (
+                float(np.mean(precision_50)) if precision_50.size else float("nan")
+            )
+        else:
+            class_result["AP50"] = float("nan")
+
+        # AP75
+        iou_75_idx = np.where(np.isclose(iou_thrs, 0.75))[0]
+        if len(iou_75_idx) > 0:
+            precision_75 = precisions[iou_75_idx[0], :, class_idx, 0, -1]
+            precision_75 = precision_75[precision_75 > -1]
+            class_result["AP75"] = (
+                float(np.mean(precision_75)) if precision_75.size else float("nan")
+            )
+        else:
+            class_result["AP75"] = float("nan")
+
+        if class_names is not None:
+            class_name = class_names.get(cat_id, str(cat_id))
+        else:
+            class_name = str(cat_id)
+
+        results[class_name] = class_result
+
+    return results
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -34,8 +104,6 @@ def train_one_epoch(
     max_norm: float = 0,
     **kwargs,
 ):
-    if use_wandb:
-        import wandb
 
     model.train()
     criterion.train()
@@ -174,14 +242,6 @@ def train_one_epoch(
             for k, v in loss_dict_reduced.items():
                 writer.add_scalar(f"Loss/{k}", v.item(), global_step)
 
-    if use_wandb:
-        wandb.log(
-            {
-                "lr": optimizer.param_groups[0]["lr"],
-                "epoch": epoch,
-                "train/loss": np.mean(losses),
-            }
-        )
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -200,8 +260,6 @@ def evaluate(
     use_wandb: bool,
     **kwargs,
 ):
-    if use_wandb:
-        import wandb
 
     model.eval()
     criterion.eval()
@@ -246,6 +304,21 @@ def evaluate(
         ]
 
         outputs = model(samples)
+        try:
+            metas = dict(
+                epoch=epoch,
+                step=i,
+                global_step=epoch * len(data_loader) + i,
+                epoch_step=len(data_loader),
+            )
+            with torch.autocast(device_type=str(device), enabled=False):
+                loss_dict = criterion(outputs, targets, **metas)
+            val_loss_value = sum(loss_dict.values()).item()
+            metric_logger.update(val_loss=val_loss_value)
+        except Exception as e:
+            # loss 계산 실패해도 나머지 평가는 계속 진행
+            pass
+
         # with torch.autocast(device_type=str(device)):
         #     outputs = model(samples)
 
@@ -299,10 +372,6 @@ def evaluate(
     # Conf matrix, F1, Precision, Recall, box IoU
     metrics = Validator(gt, preds).compute_metrics()
     print("Metrics:", metrics)
-    if use_wandb:
-        metrics = {f"metrics/{k}": v for k, v in metrics.items()}
-        metrics["epoch"] = epoch
-        wandb.log(metrics)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -316,11 +385,49 @@ def evaluate(
         coco_evaluator.summarize()
 
     stats = {}
-    # stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+    # val_loss 등 metric_logger에 있는 값 저장
+    stats.update({k: meter.global_avg for k, meter in metric_logger.meters.items()})
+
     if coco_evaluator is not None:
         if "bbox" in iou_types:
-            stats["coco_eval_bbox"] = coco_evaluator.coco_eval["bbox"].stats.tolist()
-        if "segm" in iou_types:
-            stats["coco_eval_masks"] = coco_evaluator.coco_eval["segm"].stats.tolist()
+            bbox_eval = coco_evaluator.coco_eval["bbox"]
+            coco_stats = bbox_eval.stats.tolist()
+
+            # COCO 전체 지표
+            stats["coco_eval_bbox"] = coco_stats
+
+            # 전체 bbox 지표
+            stats["mAP50-95"] = coco_stats[0]  # AP @[ IoU=0.50:0.95 ]
+            stats["AP50"] = coco_stats[1]  # AP @[ IoU=0.50 ]
+            stats["AP75"] = coco_stats[2]  # AP @[ IoU=0.75 ]
+
+            # 클래스별 지표
+            per_class_ap = summarize_per_class_ap(bbox_eval)
+            stats["per_class_ap"] = per_class_ap
+
+            if dist_utils.is_main_process():
+                print("\nPer-class bbox AP")
+                print("-" * 70)
+                print(f"{'Class':<20} {'AP50':>10} {'AP75':>10} {'mAP50-95':>12}")
+                print("-" * 70)
+
+                for class_name, values in per_class_ap.items():
+                    print(
+                        f"{class_name:<20} "
+                        f"{values['AP50']:>10.4f} "
+                        f"{values['AP75']:>10.4f} "
+                        f"{values['mAP50-95']:>12.4f}"
+                    )
+
+                print("-" * 70)
 
     return stats, coco_evaluator
+
+    # stats = {}
+    # # stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    # if coco_evaluator is not None:
+    #     if "bbox" in iou_types:
+    #         stats["coco_eval_bbox"] = coco_evaluator.coco_eval["bbox"].stats.tolist()
+
+    # return stats, coco_evaluator
